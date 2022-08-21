@@ -1,0 +1,29 @@
+{% extends 'emailme_webservice/layout.html' %}
+{% block content %}
+{% if form %}
+<div class="container" id="email-container">
+    {% if message %}
+    <div class="row">
+        <div class="col-12"><h2 class="text text-success">{{ message }}</h2></div>
+    </div>
+    {% endif %}
+    <div class="row">
+        <div class="col-12">
+            <div id="email-form-container">
+              <form method="POST" action="{% url 'home' %}">
+                {% csrf_token %}
+                {% for field in form %}
+                <div class="form-group">
+                  {{ field.label_tag }}
+                  {{ field }}
+                  {{ field.errors }}
+                </div>
+                {% endfor %}
+                <button type="submit" class="btn btn-primary">Send</button>
+              </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

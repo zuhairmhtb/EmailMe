@@ -1,0 +1,9 @@
+**/db.sqlite3
+**/migrations
+**/mydata.json
+**/__pycache__
+__pycache__/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache
+**/*.tar.gz

@@ -1,0 +1,111 @@
+version: "3.9"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.10-management
+    container_name: emailme_rabbitmq
+    ports:
+      - 127.0.0.1:5672:5672
+      - 127.0.0.1:15672:15672
+    
+    volumes:
+      - ./MQ/data:/var/lib/rabbitmq/docker
+      - ./MQ/log:/var/log/rabbitmq/docker
+
+    environment:
+      - RABBITMQ_DEFAULT_USER=${MQ_USERNAME}
+      - RABBITMQ_DEFAULT_PASS=${MQ_PASSWORD}
+
+    hostname: emailme_rabbitmq
+    networks: 
+    - emailme_net
+    command: bash -c "echo Hello && rabbitmq-plugins enable rabbitmq_management && rabbitmq-server"
+
+  privatepypi:
+    image: emailme_privatepypi
+    container_name: emailme_pypi
+    build:
+      context: ./PrivatePyPi
+      args:
+        - username=${PPYPI_USERNAME}
+        - password=${PPYPI_PASSWORD}
+    ports:
+      - 127.0.0.1:8010:8080
+    # volumes:
+      # - ./PrivatePyPi/packages:/data/packages
+
+    networks:
+      - emailme_net
+
+    command: -P /data/.htpasswd -a update,download,list /data/packages
+
+  emailservice:
+    image: emailme_emailservice
+    container_name: emailme_emailservice
+    build:
+      context: ./EmailService
+      args:
+        - privatepypiurl=${PPYPI_URL}
+        - privatepypiusername=${PPYPI_USERNAME}
+        - privatepypipassword=${PPYPI_PASSWORD}
+    networks:
+      - emailme_net
+
+    environment:
+      - MQ_HOST=rabbitmq
+      - MQ_PORT=5672
+      - MQ_USERNAME=${MQ_USERNAME}
+      - MQ_PASSWORD=${MQ_PASSWORD}
+      - PPYPI_USERNAME=${PPYPI_USERNAME}
+      - PPYPI_PASSWORD=${PPYPI_PASSWORD}
+      - PPYPI_URL=${PPYPI_URL}
+      - EMAILME_EMAILSERVICE_QUEUE=${EMAILME_EMAILSERVICE_QUEUE}
+
+    volumes:
+      - ./EmailService/emailme.emailservice:/usr/src/app/emailme.emailservice
+
+    command: ./startup.sh
+
+    depends_on:
+      - rabbitmq
+      - privatepypi   
+
+  webservice:
+    image: emailme_webservice
+    container_name: emailme_webservice
+    build: 
+      context: ./Webservice
+      args:
+        - privatepypiurl=${PPYPI_URL}
+        - privatepypiusername=${PPYPI_USERNAME}
+        - privatepypipassword=${PPYPI_PASSWORD}
+    ports:
+      - 127.0.0.1:8000:8000
+    networks:
+      - emailme_net
+
+    environment:
+      - MQ_HOST=rabbitmq
+      - MQ_PORT=5672
+      - MQ_USERNAME=${MQ_USERNAME}
+      - MQ_PASSWORD=${MQ_PASSWORD}
+      - PPYPI_USERNAME=${PPYPI_USERNAME}
+      - PPYPI_PASSWORD=${PPYPI_PASSWORD}
+      - PPYPI_URL=${PPYPI_URL}
+      - SECRET_KEY=django-insecure-h#5^qx!q^2co5y3+feo_djfa+glarj=08=dq#5wg628ox6yyyw
+      - EMAILME_EMAILSERVICE_QUEUE=${EMAILME_EMAILSERVICE_QUEUE}
+
+    volumes:
+      - ./WebService/emailme.webservice:/usr/src/app/emailme.webservice
+
+    command: ./startup.sh
+    depends_on:
+      - rabbitmq
+      - privatepypi
+      - emailservice
+
+
+networks:
+  emailme_net:
+    name: emailme_net
+    
