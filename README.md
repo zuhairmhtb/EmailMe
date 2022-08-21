@@ -128,7 +128,7 @@ This file contains the credentials which we will use for RabbitMQ (MQ_USERNAME a
 
 We will pass these variables to our docker-compose file to use for configuration of different applications.
 
-## Docker Compose - RabbitMQ
+## RabbitMQ - Docker Compose
 
 **Filepath: ./docker-compose.yml**
 
@@ -176,7 +176,7 @@ ENTRYPOINT [ "/entrypoint.sh" ]
 
 This is the dockerfile which creates the image for our private PyPi repository server. We will use PyPi image available on [Docker Hub](https://hub.docker.com/). We receive the credentials as argument from the docker-compose file. We install apache-utils to start the server and then store the credentials which clients will be providing to authenticate with the server.
 
-## Docker Compose - Private PyPI
+## Private PyPI - Docker Compose
 
 **Filepath: ./docker-compose.yml**
 
@@ -343,3 +343,60 @@ class EmailCommand(BaseCommand):
         self.recipient = recipient
 ```
 
+This is the command class which contains data which will be passed to the handler when a producer sends an email command to this application. The producer will send an email subject, body and recipient address to the handler. The handler will then process this command using the provided data. This class import PyMessagingFramework's **BaseCommand** class so that the framework recognizes this class as a valid command.
+
+## EmailService - Handler
+
+**Filepath: ./EmailService/emailme.emailservice/emailme_emailservice/handlers/email_handler.py**
+
+```
+from PyMessagingFramework.framework import BaseCommandHandler
+from emailme_emailservice.commands.email_command import EmailCommand
+
+class EmailHandler(BaseCommandHandler):
+
+    def handle(self, command:EmailCommand):
+        print(f"Sending email to {command.recipient}\nSubject:{command.subject}\nBody:{command.body}")
+```
+
+This is the handler class which receives the **EmailCommand** command and performs some task. It extends the **BaseCommandHandler** so that PyMessagingFramework recognizes it as a valid handler and so that it can call the **handle** method of this class whenever it receives the corresponding command. **handle** method recieves the command as input and prints out the email contents.
+
+## EmailService - Docker Compose
+
+**Filepath: ./docker-compose.yml**
+
+```
+emailservice:
+    image: emailme_emailservice
+    container_name: emailme_emailservice
+    build:
+      context: ./EmailService
+      # Passed to Dockerfile. Required when creating the image
+      args:
+        - privatepypiurl=${PPYPI_URL}
+        - privatepypiusername=${PPYPI_USERNAME}
+        - privatepypipassword=${PPYPI_PASSWORD}
+    networks:
+      - emailme_net
+    # Environment variables passed to the container
+    environment:
+      - MQ_HOST=rabbitmq
+      - MQ_PORT=5672
+      - MQ_USERNAME=${MQ_USERNAME}
+      - MQ_PASSWORD=${MQ_PASSWORD}
+      - PPYPI_USERNAME=${PPYPI_USERNAME}
+      - PPYPI_PASSWORD=${PPYPI_PASSWORD}
+      - PPYPI_URL=${PPYPI_URL}
+      - EMAILME_EMAILSERVICE_QUEUE=${EMAILME_EMAILSERVICE_QUEUE}
+
+    volumes:
+      - ./EmailService/emailme.emailservice:/usr/src/app/emailme.emailservice
+
+    command: ./startup.sh
+    # Starts after the message broker and private PyPi server starts
+    depends_on:
+      - rabbitmq
+      - privatepypi 
+```
+
+This section contains the configuration for the EmailService container. It passes the private PyPi url and credewntials to the dockerfile so that it can integrate the private repo with Poetry. It then passes the MQ credentials and private PyPi credentials along with EmailService queue name to the container so that the application can connect to message broker, publish the codebase as a private package and consume messages from the message broker.
