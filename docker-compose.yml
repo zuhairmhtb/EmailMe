@@ -1,12 +1,13 @@
 version: "3.9"
 
 services:
+  # RabbitMQ application which will act as the message broker for the system
   rabbitmq:
     image: rabbitmq:3.10-management
     container_name: emailme_rabbitmq
     ports:
-      - 127.0.0.1:5672:5672
-      - 127.0.0.1:15672:15672
+      - 127.0.0.1:5672:5672 # MQ port
+      - 127.0.0.1:15672:15672 # MQ Dashboard port
     
     volumes:
       - ./MQ/data:/var/lib/rabbitmq/docker
@@ -21,6 +22,7 @@ services:
     - emailme_net
     command: bash -c "echo Hello && rabbitmq-plugins enable rabbitmq_management && rabbitmq-server"
 
+  # Private PyPi repository to host our private packages
   privatepypi:
     image: emailme_privatepypi
     container_name: emailme_pypi
@@ -30,7 +32,7 @@ services:
         - username=${PPYPI_USERNAME}
         - password=${PPYPI_PASSWORD}
     ports:
-      - 127.0.0.1:8010:8080
+      - 127.0.0.1:8010:8080 # PyPi Server port
     # volumes:
       # - ./PrivatePyPi/packages:/data/packages
 
@@ -39,18 +41,20 @@ services:
 
     command: -P /data/.htpasswd -a update,download,list /data/packages
 
+  # EmailService - A python application that receives command from WebService and prints email out
   emailservice:
     image: emailme_emailservice
     container_name: emailme_emailservice
     build:
       context: ./EmailService
+      # Passed to Dockerfile. Required when creating the image
       args:
         - privatepypiurl=${PPYPI_URL}
         - privatepypiusername=${PPYPI_USERNAME}
         - privatepypipassword=${PPYPI_PASSWORD}
     networks:
       - emailme_net
-
+    # Environment variables passed to the container
     environment:
       - MQ_HOST=rabbitmq
       - MQ_PORT=5672
@@ -65,25 +69,27 @@ services:
       - ./EmailService/emailme.emailservice:/usr/src/app/emailme.emailservice
 
     command: ./startup.sh
-
+    # Starts after the message broker and private PyPi server starts
     depends_on:
       - rabbitmq
       - privatepypi   
 
+  # WebService - A Django web application where users can create email and forward it to EmailService
   webservice:
     image: emailme_webservice
     container_name: emailme_webservice
     build: 
       context: ./Webservice
+      # Passed to Dockerfile. Required when creating the image
       args:
         - privatepypiurl=${PPYPI_URL}
         - privatepypiusername=${PPYPI_USERNAME}
         - privatepypipassword=${PPYPI_PASSWORD}
     ports:
-      - 127.0.0.1:8000:8000
+      - 127.0.0.1:8000:8000 # Port where the web application is running
     networks:
       - emailme_net
-
+    # Environment variables passed to the container
     environment:
       - MQ_HOST=rabbitmq
       - MQ_PORT=5672
@@ -99,6 +105,7 @@ services:
       - ./WebService/emailme.webservice:/usr/src/app/emailme.webservice
 
     command: ./startup.sh
+    # Starts after the message broker, EmailService and private PyPi server starts
     depends_on:
       - rabbitmq
       - privatepypi

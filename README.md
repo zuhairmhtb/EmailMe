@@ -105,3 +105,241 @@ I have used the following technologies in the application:
 4. [PyMessagingFramework](https://pypi.org/project/PyMessagingFramework/)
 
 5. [Django](https://www.djangoproject.com/)
+
+
+**Note: All file paths provided in the following tutorial is relative to the root folder**
+
+## Environment File
+
+**Filepath: ./.env**
+
+The first file we will analyze is the .env file. It contains the following environment variables:
+
+```
+MQ_USERNAME=admin
+MQ_PASSWORD=admin
+PPYPI_USERNAME=admin
+PPYPI_PASSWORD=admin
+PPYPI_URL=http://privatepypi:8080
+EMAILME_EMAILSERVICE_QUEUE=emailme_emailservice
+```
+
+This file contains the credentials which we will use for RabbitMQ (MQ_USERNAME and MQ_PASSWORD), the credentials which we will use for our private PyPi repository (PPYPI_USERNAME, PPYPI_PASSWORD), url of our private PyPI repository (PPYPI_URL) and the queue name (EMAILME_EMAILSERVICE_QUEUE) which we will use for our consumer (EmailService) application.
+
+We will pass these variables to our docker-compose file to use for configuration of different applications.
+
+## Docker Compose - RabbitMQ
+
+**Filepath: ./docker-compose.yml**
+
+```
+rabbitmq:
+    image: rabbitmq:3.10-management
+    container_name: emailme_rabbitmq
+    ports:
+      - 127.0.0.1:5672:5672
+      - 127.0.0.1:15672:15672
+    
+    volumes:
+      - ./MQ/data:/var/lib/rabbitmq/docker
+      - ./MQ/log:/var/log/rabbitmq/docker
+
+    environment:
+      - RABBITMQ_DEFAULT_USER=${MQ_USERNAME}
+      - RABBITMQ_DEFAULT_PASS=${MQ_PASSWORD}
+
+    hostname: emailme_rabbitmq
+    networks: 
+    - emailme_net
+    command: bash -c "echo Hello && rabbitmq-plugins enable rabbitmq_management && rabbitmq-server"
+```
+
+This section of the docker-compose file contains the configuration for our RabbitMQ application. We will use the RabbitMQ image available on [Docker Hub](https://hub.docker.com/). We will use the port **5672** so that our services can communicate with MQ via this port. We will use the port **15672** so that we can view the MQ management dashboard on our browser. It will help us to see the queues which different services create, the messages passed among different services, etc. We will use the **command** to start the MQ server and MQ management server when the container starts.
+
+
+## Private PyPi - Docker File
+
+**Filepath: ./PrivatePyPi/Dockerfile**
+
+```
+FROM pypiserver/pypiserver:v1.5.0
+
+ARG username
+ARG password
+
+RUN apk add apache2-utils
+
+RUN htpasswd -scb /data/.htpasswd $username $password
+
+ENTRYPOINT [ "/entrypoint.sh" ]
+```
+
+This is the dockerfile which creates the image for our private PyPi repository server. We will use PyPi image available on [Docker Hub](https://hub.docker.com/). We receive the credentials as argument from the docker-compose file. We install apache-utils to start the server and then store the credentials which clients will be providing to authenticate with the server.
+
+## Docker Compose - Private PyPI
+
+**Filepath: ./docker-compose.yml**
+
+```
+privatepypi:
+    image: emailme_privatepypi
+    container_name: emailme_pypi
+    build:
+      context: ./PrivatePyPi
+      args:
+        - username=${PPYPI_USERNAME}
+        - password=${PPYPI_PASSWORD}
+    ports:
+      - 127.0.0.1:8010:8080
+    # volumes:
+      # - ./PrivatePyPi/packages:/data/packages
+
+    networks:
+      - emailme_net
+
+    command: -P /data/.htpasswd -a update,download,list /data/packages
+```
+
+This section of the docker-compose file contains the configuration for our private PyPi repository. It uses the port **8080** so that our services can communicate with the repository. We will use the **command** to start the server up and provide the permission to update, download and view packages of the repository if the client provides valid authentication credentials. 
+
+## EmailService - Docker File
+
+**Filepath: ./EmailService/Dockerfile**
+
+```
+FROM python:3.7
+
+ARG privatepypiurl
+ARG privatepypiusername
+ARG privatepypipassword
+
+WORKDIR /usr/src/app
+
+COPY ./emailme.emailservice emailme.emailservice
+```
+This file creates the image for our EmailService application. We use a base python 3.7 image from Docker Hub. We receive the private PyPi server url and credentials as argument from the docker-compose file. We will need this to create and publish the application as a package to our private PyPi Server. WebService can install the package and use the command class to publish an email via EmailService.
+
+```
+RUN apt-get update && apt-get install curl && \
+curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/get-poetry.py | python3 -
+
+ENV PATH="${PATH}:/root/.poetry/bin" \
+POETRY_NO_INTERACTION=1
+```
+
+In this section we install Poetry and then configure poetry to use our private PyPi server. We set the bin directory path as environment variable of the container.
+
+```
+WORKDIR /usr/src/app/emailme.emailservice
+
+RUN poetry config virtualenvs.create false && \
+poetry config repositories.ppypi $privatepypiurl && \
+poetry config http-basic.ppypi  $privatepypiusername $privatepypipassword && \
+poetry install
+
+CMD [ "./startup.sh" ]
+
+```
+
+In this section we configure Poetry to use our private PyPi repository. We also provide the credentials to our private repository. Then finally we install all the packages of the application which is enlisted in **poetry.lock** and **pyproject.toml** file. We then start the application via the **startup.sh** file.
+
+## EmailService - Startup Script
+
+**Filepath: ./EmailService/emailme.emailservice/startup.sh**
+
+```
+#!/bin/bash
+echo "sleeping..."
+sleep 10
+```
+
+This is the file which starts the EmailService application. First it sleeps for 10 seconds so that RabbitMQ can start.
+
+```
+echo "Publishing package to private Pypi..."
+poetry build
+```
+
+Then it creates python package inside dist/ folder. The package contains the entire EmailService codebase for now. But we can only publish the command/ folder as the package if we want. It will keep the package size smaller and remove unneccessary files from the package.
+
+```
+poetry publish -r ppypi
+echo "Running application"
+```
+
+After creating a package, it publishes the package to our private PyPi repository.
+
+```
+poetry run python emailme_emailservice/startup.py
+```
+
+It then starts the EmailService application to start listening for messages.
+
+## EmailService - Startup Python File
+
+**Filepath: ./EmailService/emailme.emailservice/emailme_emailservice/startup.py**
+
+```
+from PyMessagingFramework.framework import MessagingFramework
+from emailme_emailservice.commands.email_command import EmailCommand
+from emailme_emailservice.handlers.email_handler import EmailHandler
+
+import os
+```
+
+We import the PyMessagingFramework to connect to the message broker. We also import **EmailCommand** that contains the command class and **EmailHandler** that contains the handler for the command. We also import the **os** package to retrieve our MQ credentials, urls and queue name from the environment variable which was set by the docker-compose file.
+
+```
+MQ_HOST = os.getenv('MQ_HOST', 'rabbitmq')
+MQ_PORT = int(os.getenv('MQ_PORT', '5672'))
+MQ_USERNAME = os.getenv('MQ_USERNAME', 'guest')
+MQ_PASSWORD = os.getenv('MQ_PASSWORD', 'guest')
+QUEUE_NAME = os.getenv('EMAILME_EMAILSERVICE_QUEUE', 'emailme_emailservice')
+```
+
+We set the MQ url, credentials and the name of the queue which we will create inside message broker to consume messages.
+
+```
+framework = MessagingFramework(
+        broker_url=MQ_HOST, # URL of rabbiMQ
+        broker_port=MQ_PORT, # port of rabbiMQ
+        broker_username=MQ_USERNAME, # username of rabbiMQ
+        broker_password=MQ_PASSWORD, # password of rabbiMQ
+        queue_name=QUEUE_NAME, # Queue name of consumer,
+        auto_delete=True, # Whether to auto delete the queue when application is stopped
+        non_blocking_connection=False # Creates a non blocking connection
+    )
+```
+
+We then create the MessagingFramework object. We pass all the required configurations to connect to the broker, create a queue and exchange messages.
+
+```
+framework.register_commands_as_consumer(command=EmailCommand, handler=EmailHandler)
+```
+
+Here we attach the command with the handler so that if the framework receives this specific command, it calls this specific handler.
+
+```
+print("Starting application")
+framework.start()
+```
+
+It then connects to the message broker and creates required queue for the application if it does not already exist. Then it starts listening for messages.
+
+
+## EmailService - Command
+
+**Filepath: ./EmailService/emailme.emailservice/emailme_emailservice/commands/email_command.py**
+
+```
+from PyMessagingFramework.framework import BaseCommand
+from typing import List
+
+class EmailCommand(BaseCommand):
+
+    def __init__(self, body:str, subject:str, recipient:str):
+        self.body = body
+        self.subject = subject
+        self.recipient = recipient
+```
+
