@@ -13,6 +13,9 @@ https://docs.djangoproject.com/en/3.2/ref/settings/
 from pathlib import Path
 import os
 
+from PyMessagingFramework.framework import MessagingFramework
+from emailme_emailservice.commands.email_command import EmailCommand
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -23,7 +26,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-h#5^qx!q^2co5y3+feo_djfa+glarj=08=dq#5wg628ox6yyyw')
 MQ_HOST = os.getenv('MQ_HOST', 'rabbitmq')
-MQ_PORT = os.getenv('MQ_PORT', '5672')
+MQ_PORT = int(os.getenv('MQ_PORT', '5672'))
 MQ_USERNAME = os.getenv('MQ_USERNAME', 'guest')
 MQ_PASSWORD = os.getenv('MQ_PASSWORD', 'guest')
 
@@ -130,3 +133,18 @@ STATIC_URL = '/static/'
 # https://docs.djangoproject.com/en/3.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+QUEUE_NAME = os.getenv("EMAILME_EMAILSERVICE_QUEUE", "")
+
+framework = MessagingFramework(
+        broker_url=MQ_HOST, # URL of rabbiMQ
+        broker_port=MQ_PORT, # port of rabbiMQ
+        broker_username=MQ_USERNAME, # username of rabbiMQ
+        broker_password=MQ_PASSWORD, # password of rabbiMQ
+        queue_name="emailme_webservice", # Queue name of producer
+        auto_delete=True,  # Whether to auto delete the queue when application is stopped
+        non_blocking_connection=False
+    )
+
+framework.register_commands_as_producer(command=EmailCommand, routing_key=QUEUE_NAME, exchange_name='')
