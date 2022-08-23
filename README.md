@@ -400,3 +400,213 @@ emailservice:
 ```
 
 This section contains the configuration for the EmailService container. It passes the private PyPi url and credewntials to the dockerfile so that it can integrate the private repo with Poetry. It then passes the MQ credentials and private PyPi credentials along with EmailService queue name to the container so that the application can connect to message broker, publish the codebase as a private package and consume messages from the message broker.
+
+## WebService - Docker File
+
+**Filepath: ./WebService/Dockerfile**
+
+```
+FROM python:3.7
+
+ARG privatepypiurl
+ARG privatepypiusername
+ARG privatepypipassword
+
+WORKDIR /usr/src/app
+
+COPY ./emailme.webservice emailme.webservice
+
+RUN apt-get update && apt-get install curl && \
+curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/get-poetry.py | python3 -
+
+ENV PATH="${PATH}:/root/.poetry/bin" \
+POETRY_NO_INTERACTION=1
+
+WORKDIR /usr/src/app/emailme.webservice
+
+RUN poetry config virtualenvs.create false && \
+poetry config repositories.ppypi $privatepypiurl && \
+poetry config http-basic.ppypi  $privatepypiusername $privatepypipassword && \
+poetry install
+
+RUN poetry run python emailme_webservice/manage.py makemigrations && \
+poetry run python emailme_webservice/manage.py migrate
+
+CMD [ "./startup.sh" ]
+```
+
+This file creates the image for hosting the web application that will receive the email contents as input from users and forward it to the email service. We use a base Python 3.7 image from Docker Hub.
+
+```
+ARG privatepypiurl
+ARG privatepypiusername
+ARG privatepypipassword
+```
+
+We receive the private PyPi  server credentials and urls as input so that we can configure the private repository in Poetry. This will enable us to install the private packages.
+
+
+```
+RUN apt-get update && apt-get install curl && \
+curl -sSL https://raw.githubusercontent.com/python-poetry/poetry/master/get-poetry.py | python3 -
+
+ENV PATH="${PATH}:/root/.poetry/bin" \
+POETRY_NO_INTERACTION=1
+```
+
+We then install Poetry and configure the environment variable to set the path to Poetry executable file.
+
+```
+RUN poetry config virtualenvs.create false && \
+poetry config repositories.ppypi $privatepypiurl && \
+poetry config http-basic.ppypi  $privatepypiusername $privatepypipassword && \
+poetry install
+```
+
+We then configure the private PyPi repository inside Poetry and then install the packages from pyproject.toml file.
+
+```
+RUN poetry run python emailme_webservice/manage.py makemigrations && \
+poetry run python emailme_webservice/manage.py migrate
+
+CMD [ "./startup.sh" ]
+```
+
+Next we make migration of the Django DB models and start the web application.
+
+## WebService - Startup Script
+
+**Filename: ./WebService/emalme.webservice/startup.sh**
+
+This is the script which is executed to start the Django application
+
+## WebService - pyproject.toml
+
+**Filename: ./WebService/emailme.webservice/pyproject.toml**
+
+```
+[tool.poetry]
+name = "emailme.webservice"
+version = "0.1.0"
+description = ""
+authors = ["zuhairmhtb <zuhairmhtb@gmail.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.7"
+Django = "3.2"
+PyMessagingFramework = "^1.1.0"
+"emailme.emailservice" = {version = "^0.1.0", source = "ppypi"}
+
+[tool.poetry.dev-dependencies]
+pytest = "^5.2"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "ppypi"
+url = "http://127.0.0.1:8010/simple"
+
+```
+
+This is the Poetry configuration file. It contains the package information and more importantly the private and public packages which we will use for the application.
+
+```
+"emailme.emailservice" = {version = "^0.1.0", source = "ppypi"}
+```
+This is the private EmailService package which we will use to pass the command from WebService to EmailService. You will notice that it contains a 'source' parameter which points it to our private PyPi server. Therefore, whenever we install this package, it will try to fetch the package from the private repository instead of public PyPi server.
+
+## WebService - Poetry Lock
+
+**Filename: ./WebService/emailme.webservice/poetry.lock**
+
+This file contains all information related to the package which we will use in our web application. It also contains SHA hash for packages to maintan package inegrity.
+
+## WebService - Settings.py
+**Filename: ./WebService/emailme.webservice/emailme_webservice/emailme_webservice/settings.py**
+
+This is the Django settings file that we will be using for our application. 
+
+```
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-h#5^qx!q^2co5y3+feo_djfa+glarj=08=dq#5wg628ox6yyyw')
+MQ_HOST = os.getenv('MQ_HOST', 'rabbitmq')
+MQ_PORT = int(os.getenv('MQ_PORT', '5672'))
+MQ_USERNAME = os.getenv('MQ_USERNAME', 'guest')
+MQ_PASSWORD = os.getenv('MQ_PASSWORD', 'guest')
+```
+
+It imports the RabbitMQ (Message Broker) configuration in order to initilize the PyMessagingFramework object and pass command to our EmailService via the message broker.
+
+```
+QUEUE_NAME = os.getenv("EMAILME_EMAILSERVICE_QUEUE", "")
+
+framework = MessagingFramework(
+        broker_url=MQ_HOST, # URL of rabbiMQ
+        broker_port=MQ_PORT, # port of rabbiMQ
+        broker_username=MQ_USERNAME, # username of rabbiMQ
+        broker_password=MQ_PASSWORD, # password of rabbiMQ
+        queue_name="emailme_webservice", # Queue name of producer
+        auto_delete=True,  # Whether to auto delete the queue when application is stopped
+        non_blocking_connection=False
+    )
+
+framework.register_commands_as_producer(command=EmailCommand, routing_key=QUEUE_NAME, exchange_name='')
+```
+
+Here we receive our EmailService queue name from the environment variable. We then create a Framework object and register the EmailService command with the queue name. This enables the PyMessagingFramework object to route our command data to the queue whenever we pass the command object to the Framework.
+
+## WebService - Views
+
+**Filename: ./WebService/emailme.webservice/emailme_webservice/emailme_webservice/views.py**
+
+```
+import os
+from django.shortcuts import render, redirect
+from emailme_emailservice.commands.email_command import EmailCommand
+
+from .forms import EmailForm
+from .settings import framework
+
+def home(request):
+    form = EmailForm()
+    message = ""
+    if request.method == "POST":
+        form = EmailForm(request.POST)
+        if form.is_valid():
+            print("Sending data to email service")
+            framework.publish_message(EmailCommand(
+                body=form.cleaned_data["body"], 
+                subject=form.cleaned_data["subject"], 
+                recipient=form.cleaned_data["recipient"]
+                ))
+            message = f"You have successfully sent an email to {form.cleaned_data['recipient']}"
+            form = EmailForm()
+        
+    return render(request, 'emailme_webservice/index.html', {
+        'form': form,
+        'title': 'Home',
+        'message': message
+    })
+```
+
+This is the view for the homepage of our application. Here we create a form to receive the subject, body and recipient address of the email which we will be displaying on our EmailService.
+
+```
+framework.publish_message(EmailCommand(
+  body=form.cleaned_data["body"], 
+  subject=form.cleaned_data["subject"], 
+  recipient=form.cleaned_data["recipient"]
+))
+```
+When a user provides these information we create an EmailCommand object with the data and pass the command to PyMessaingFramework. The Framework then routes the message to the configured queue which finally reaches our EmailService handler that handles this command.
+
+## Conclusion
+
+This is our simple microservice application that receives Email input from user and forwards the email to EmailService. The EmailService then prints the email in console. When using docker you might not be able to see the console outputs. In that case, you can bash into the EmailService container, run startup.sh to start another instance of the service. Now when you send emails, the output will be received by each service in a round robin fashion. So, you will be able to see the console output in the service which you started with bash.
+
+I know there are a lot of better approaches to building microservice architectures with python. This is just a simple architecture I have implemented to see how can develop scalable services and manage public and private packages securely inside the service.
+
+I would love to hear from you if you have other architectures in mind and your feedback regarding the archiecture which I have implemented in this tutorial. It is always fun to learn new stuff, implement them and watch the magic happen.
+
+I hope you enjoyed reading this article as much as I have enjoyed making it. Happy coding!
